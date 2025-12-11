@@ -13,4 +13,5 @@ dependencies = [
     "sse-starlette>=2.1.0",
     "openai>=2.9.0",
     "python-dotenv>=1.0.0",
+    "pydantic-ai>=1.30.1",
 ]

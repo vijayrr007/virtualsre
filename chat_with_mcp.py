@@ -720,8 +720,8 @@ async def main():
     )
     parser.add_argument(
         "--mcp-url",
-        default="http://localhost:5000/mcp",
-        help="MCP server URL for HTTP transport (default: http://localhost:5000/mcp)"
+        default="http://localhost:5555/mcp",
+        help="MCP server URL for HTTP transport (default: http://localhost:5555/mcp)"
     )
     parser.add_argument(
         "--auto-start-server",

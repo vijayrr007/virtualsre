@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Tests and development
+test_*.py
+*_test.py
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Kubernetes
+k8s-deployment.yaml
+*.yaml
+*.yml
+
+# Docker
+Dockerfile
+.dockerignore
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Misc
+terminals/
+.cursor/
+*.log
+*.pid
+*.seed
+*.tar.gz
+
+

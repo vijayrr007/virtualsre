@@ -1,0 +1,363 @@
+# Kubernetes Deployment Manifest for VirtualSRE MCP Server
+# Includes: Namespace, ServiceAccount, RBAC, Deployment, and Service
+# Supports multi-cluster access via in-cluster config + external kubeconfig
+
+---
+# Namespace (optional - can be deployed in any namespace)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: virtualsre
+  labels:
+    app: virtualsre-mcp
+
+---
+# ServiceAccount for in-cluster authentication
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: virtualsre-mcp
+  namespace: virtualsre
+  labels:
+    app: virtualsre-mcp
+
+---
+# ClusterRole with read-only permissions for all Kubernetes and Istio resources
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: virtualsre-mcp-reader
+  labels:
+    app: virtualsre-mcp
+rules:
+  # Core resources
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - namespaces
+      - nodes
+      - configmaps
+      - secrets
+      - events
+    verbs: ["get", "list"]
+  
+  # Apps resources
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - statefulsets
+      - daemonsets
+      - replicasets
+    verbs: ["get", "list"]
+  
+  # Batch resources
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list"]
+  
+  # Networking resources
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+    verbs: ["get", "list"]
+  
+  # Istio networking resources
+  - apiGroups: ["networking.istio.io"]
+    resources:
+      - virtualservices
+      - destinationrules
+      - gateways
+      - serviceentries
+    verbs: ["get", "list"]
+  
+  # Istio security resources
+  - apiGroups: ["security.istio.io"]
+    resources:
+      - peerauthentications
+      - authorizationpolicies
+    verbs: ["get", "list"]
+  
+  # Gateway API resources
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources:
+      - gateways
+      - httproutes
+      - gatewayclasses
+    verbs: ["get", "list"]
+
+---
+# ClusterRoleBinding to grant permissions to ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: virtualsre-mcp-reader-binding
+  labels:
+    app: virtualsre-mcp
+subjects:
+  - kind: ServiceAccount
+    name: virtualsre-mcp
+    namespace: virtualsre
+roleRef:
+  kind: ClusterRole
+  name: virtualsre-mcp-reader
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Secret for external cluster kubeconfig (OPTIONAL)
+# Uncomment and populate if you need to access external clusters
+# 
+# To create this secret from your kubeconfig:
+# kubectl create secret generic external-kubeconfig \
+#   --from-file=config=$HOME/.kube/config \
+#   --namespace=virtualsre
+#
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: external-kubeconfig
+#   namespace: virtualsre
+#   labels:
+#     app: virtualsre-mcp
+# type: Opaque
+# data:
+#   config: <base64-encoded-kubeconfig>
+
+---
+# Deployment for MCP Server
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: virtualsre-mcp
+  namespace: virtualsre
+  labels:
+    app: virtualsre-mcp
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: virtualsre-mcp
+  template:
+    metadata:
+      labels:
+        app: virtualsre-mcp
+      annotations:
+        # Force restart on config changes
+        checksum/config: "change-me-to-force-restart"
+    spec:
+      serviceAccountName: virtualsre-mcp
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      
+      containers:
+      - name: mcp-server
+        image: virtualsre-mcp:latest
+        imagePullPolicy: IfNotPresent
+        
+        ports:
+        - name: http
+          containerPort: 5555
+          protocol: TCP
+        
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PYTHONDONTWRITEBYTECODE
+          value: "1"
+        
+        # Optional: Mount external kubeconfig for multi-cluster access
+        # Uncomment the volumeMounts section below if you created the external-kubeconfig secret
+        # volumeMounts:
+        # - name: external-kubeconfig
+        #   mountPath: /home/mcpuser/.kube
+        #   readOnly: true
+        
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        
+        # Liveness probe - check if server port is open and accepting connections
+        livenessProbe:
+          tcpSocket:
+            port: 5555
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Readiness probe - verify MCP endpoint responds to health check
+        readinessProbe:
+          tcpSocket:
+            port: 5555
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        
+        # Startup probe - allow more time for initial startup
+        startupProbe:
+          tcpSocket:
+            port: 5555
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 30
+      
+      # Optional: Uncomment to mount external kubeconfig
+      # volumes:
+      # - name: external-kubeconfig
+      #   secret:
+      #     secretName: external-kubeconfig
+      #     items:
+      #     - key: config
+      #       path: config
+
+---
+# Service to expose MCP Server
+apiVersion: v1
+kind: Service
+metadata:
+  name: virtualsre-mcp
+  namespace: virtualsre
+  labels:
+    app: virtualsre-mcp
+spec:
+  type: ClusterIP
+  selector:
+    app: virtualsre-mcp
+  ports:
+  - name: http
+    port: 5555
+    targetPort: 5555
+    protocol: TCP
+  sessionAffinity: None
+
+---
+# Gateway API - Modern alternative to Ingress
+# Requires Gateway API CRDs installed in cluster
+# Install: kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
+#
+# NOTE: The Service type (ClusterIP vs LoadBalancer) is controlled by the GatewayClass configuration,
+# not this Gateway resource. Istio will create a Service (e.g., virtualsre-gateway-istio) automatically.
+# To change the Service type to ClusterIP, you have two options:
+#
+# Option 1: Patch the Service after creation (for local testing):
+#   kubectl patch svc virtualsre-gateway-istio -n virtualsre -p '{"spec":{"type":"ClusterIP"}}'
+#
+# Option 2: Configure the Istio GatewayClass to use ClusterIP by default (cluster-wide change):
+#   This requires modifying the Istio installation or GatewayClass parameters.
+
+---
+# Gateway - Defines the load balancer/entry point
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: virtualsre-gateway
+  namespace: virtualsre
+  labels:
+    app: virtualsre-mcp
+spec:
+  # GatewayClass defines the controller (istio, envoy, nginx, etc.)
+  # Common values: istio, eg (Envoy Gateway), nginx, traefik
+  # The Service type created by this GatewayClass is configured at the GatewayClass level
+  gatewayClassName: istio  # Change to your gateway controller
+  
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    # hostname: "mcp.example.com"  # Replace with your domain
+    allowedRoutes:
+      namespaces:
+        from: Same  # Only routes in same namespace
+  
+  # Optional: HTTPS listener with TLS
+  # - name: https
+  #   protocol: HTTPS
+  #   port: 443
+  #   hostname: "mcp.example.com"
+  #   tls:
+  #     mode: Terminate
+  #     certificateRefs:
+  #     - name: mcp-tls-cert  # Reference to TLS secret
+  #   allowedRoutes:
+  #     namespaces:
+  #       from: Same
+
+---
+# HTTPRoute - Defines routing rules for HTTP traffic
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: virtualsre-mcp-route
+  namespace: virtualsre
+  labels:
+    app: virtualsre-mcp
+spec:
+  # Attach to the Gateway
+  parentRefs:
+  - name: virtualsre-gateway
+    namespace: virtualsre
+  # Routing rules
+  rules:
+  # Route all traffic to MCP service
+  - matches:
+    - path:
+        type: Exact
+        value: /mcp  # MCP endpoint
+    backendRefs:
+    - name: virtualsre-mcp
+      port: 5555
+      weight: 100
+  
+
+---
+# Optional: HTTPRoute with path rewriting
+# Use this if you want to access MCP at root path but forward to /mcp
+# apiVersion: gateway.networking.k8s.io/v1
+# kind: HTTPRoute
+# metadata:
+#   name: virtualsre-mcp-rewrite
+#   namespace: virtualsre
+# spec:
+#   parentRefs:
+#   - name: virtualsre-gateway
+#   hostnames:
+#   - "mcp.example.com"
+#   rules:
+#   - matches:
+#     - path:
+#         type: PathPrefix
+#         value: /
+#     filters:
+#     - type: URLRewrite
+#       urlRewrite:
+#         path:
+#           type: ReplacePrefixMatch
+#           replacePrefixMatch: /mcp
+#     backendRefs:
+#     - name: virtualsre-mcp
+#       port: 5555
+
+---
+# Optional: TLS Certificate Secret (if using HTTPS)
+# Create this with cert-manager or manually
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: mcp-tls-cert
+#   namespace: virtualsre
+# type: kubernetes.io/tls
+# data:
+#   tls.crt: <base64-encoded-cert>
+#   tls.key: <base64-encoded-key>
+

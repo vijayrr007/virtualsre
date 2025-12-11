@@ -54,8 +54,15 @@ def get_k8s_clients(context: Optional[str] = None) -> tuple:
     """
     Get Kubernetes API clients for specified context.
     
+    Supports hybrid authentication:
+    1. If context is specified: Uses kubeconfig context (for external clusters)
+    2. If no context: Tries in-cluster config first (for local cluster), falls back to kubeconfig
+    
     Args:
-        context: Cluster context name
+        context: Cluster context name (optional)
+                 - If None and in-cluster: uses in-cluster service account
+                 - If None and not in-cluster: uses default kubeconfig context
+                 - If specified: uses kubeconfig context for external cluster
         
     Returns:
         Tuple of (CoreV1Api, AppsV1Api, CustomObjectsApi)
@@ -64,11 +71,20 @@ def get_k8s_clients(context: Optional[str] = None) -> tuple:
         Exception: If clients cannot be created
     """
     try:
-        # Load kubeconfig - this works for local clusters and properly configured EKS
         from kubernetes import config as k8s_config
-        k8s_config.load_kube_config(context=context)
         
-        # Create API clients using the default configuration
+        # If context is specified, always use kubeconfig (for external clusters)
+        if context:
+            k8s_config.load_kube_config(context=context)
+        else:
+            # No context specified: try in-cluster first (when running in K8s pod)
+            try:
+                k8s_config.load_incluster_config()
+            except k8s_config.ConfigException:
+                # Not in cluster: use default kubeconfig context (for local development)
+                k8s_config.load_kube_config()
+        
+        # Create API clients using the loaded configuration
         core_v1 = client.CoreV1Api()
         apps_v1 = client.AppsV1Api()
         custom_api = client.CustomObjectsApi()
@@ -2298,7 +2314,7 @@ def set_default_context(context: str):
     cluster_config.default_context = context
 
 
-def run_server(transport: str = "stdio", host: str = "0.0.0.0", port: int = 5000):
+def run_server(transport: str = "stdio", host: str = "0.0.0.0", port: int = 5555):
     """Run the MCP server with specified transport.
     
     Args:
@@ -2334,8 +2350,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--port",
         type=int,
-        default=5000,
-        help="Port to bind to for HTTP transport (default: 5000)"
+        default=5555,
+        help="Port to bind to for HTTP transport (default: 5555)"
     )
     
     args = parser.parse_args()
