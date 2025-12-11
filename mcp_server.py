@@ -2298,11 +2298,46 @@ def set_default_context(context: str):
     cluster_config.default_context = context
 
 
-def run_server():
-    """Run the MCP server."""
-    mcp.run()
+def run_server(transport: str = "stdio", host: str = "0.0.0.0", port: int = 5000):
+    """Run the MCP server with specified transport.
+    
+    Args:
+        transport: "stdio" or "http"
+        host: Host to bind to (for HTTP)
+        port: Port to bind to (for HTTP)
+    """
+    if transport == "http":
+        print(f"Starting MCP server on http://{host}:{port}/mcp")
+        mcp.run(transport="http", host=host, port=port)
+    else:
+        # Default STDIO for Claude Desktop and subprocess
+        mcp.run()
 
 
 if __name__ == "__main__":
-    run_server()
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description="VirtualSRE MCP Server - EKS Cluster Operations"
+    )
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Transport type (default: stdio)"
+    )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host to bind to for HTTP transport (default: 0.0.0.0)"
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+        help="Port to bind to for HTTP transport (default: 5000)"
+    )
+    
+    args = parser.parse_args()
+    run_server(transport=args.transport, host=args.host, port=args.port)
 

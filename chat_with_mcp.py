@@ -10,12 +10,16 @@ import os
 import sys
 import json
 import asyncio
+import argparse
+import subprocess
 from typing import List, Dict, Any, Optional
+from urllib.parse import urljoin
 from openai import OpenAI
 from fastmcp import FastMCP
 from fastmcp.client import Client
 from dotenv import load_dotenv
 import boto3
+import httpx
 
 # Load environment variables from .env file
 load_dotenv()
@@ -358,56 +362,212 @@ def get_llm_provider() -> tuple[str, Optional[str]]:
         return (None, None)
 
 
-async def main():
-    """Run interactive chat with MCP server."""
-    print("=" * 70)
-    print("🤖 Kubernetes Chat (via MCP Server + LLM)")
-    print("=" * 70)
-    print()
+async def main_http(mcp_url: str, auto_start_server: bool, provider: str, api_key: str, llm_client: Any, model_id: Optional[str]):
+    """Run interactive chat with MCP server using HTTP transport.
     
-    # Detect LLM provider
-    provider, api_key = get_llm_provider()
+    Note: FastMCP Client with HTTP URL will handle the session management automatically.
+    """
+    server_process = None
     
-    if not provider:
-        print("❌ No API key found!")
-        print("   Please create a .env file with either:")
-        print("   - AWS_BEDROCK_API_KEY=your-key (for Bedrock Claude)")
-        print("   - OPENAI_API_KEY=sk-your-key (for OpenAI)")
-        print()
-        print("   See env.example for template")
-        return 1
-    
-    print(f"✅ Using {provider.upper()} provider")
-    
-    # Initialize LLM client
-    llm_client = None
-    model_id = None
-    
-    if provider == "bedrock":
+    # If auto-start is requested, start the server first
+    if auto_start_server:
+        print("🚀 Starting MCP HTTP server...")
+        
+        # Extract port from URL (e.g., http://localhost:5000/mcp -> 5000)
         try:
-            region = os.getenv("AWS_REGION", "us-east-1")
-            model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
-            
-            llm_client = boto3.client(
-                service_name='bedrock-runtime',
-                region_name=region,
-                aws_access_key_id=api_key,
-                aws_secret_access_key=api_key  # Using same key for both
+            port = mcp_url.split(":")[-1].split("/")[0]
+        except:
+            port = "5000"  # Default port
+        
+        # Get the directory where this script is located
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        server_path = os.path.join(script_dir, "mcp_server.py")
+        
+        try:
+            server_process = subprocess.Popen(
+                [sys.executable, server_path, "--transport", "http", "--port", port],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=script_dir
             )
-            print(f"✅ Bedrock client initialized (region: {region}, model: {model_id})")
+            print(f"   Starting server on port {port}...")
+            await asyncio.sleep(4)  # Wait for server to start
+            
+            # Check if server is still running
+            if server_process.poll() is not None:
+                # Server died, read error
+                _, stderr = server_process.communicate()
+                error_msg = stderr.decode() if stderr else "Unknown error"
+                
+                # Check for common errors
+                if "address already in use" in error_msg.lower() or "errno 48" in error_msg.lower():
+                    print(f"❌ Port {port} is already in use!")
+                    print(f"   Try a different port: --mcp-url http://localhost:5555/mcp")
+                    print(f"   Or stop the existing server on port {port}")
+                else:
+                    print(f"❌ Server failed to start")
+                    if "error" in error_msg.lower():
+                        # Extract just the error line
+                        error_lines = [line for line in error_msg.split('\n') if 'error' in line.lower()]
+                        if error_lines:
+                            print(f"   {error_lines[0].strip()}")
+                return 1
+            
+            print("✅ MCP HTTP server started")
         except Exception as e:
-            print(f"❌ Bedrock error: {e}")
-            return 1
-    else:  # OpenAI
-        try:
-            llm_client = OpenAI(api_key=api_key)
-            print("✅ OpenAI client initialized")
-        except Exception as e:
-            print(f"❌ OpenAI error: {e}")
+            print(f"❌ Failed to start server: {e}")
+            if server_process:
+                server_process.kill()
             return 1
     
-    # Connect to MCP server using FastMCP client
-    print("🚀 Connecting to MCP server...")
+    print(f"🚀 Connecting to MCP server at {mcp_url}...")
+    
+    # Use FastMCP Client with HTTP URL - it handles sessions automatically
+    try:
+        async with Client(mcp_url) as mcp_client:
+            print("✅ MCP server connected!")
+            
+            # Fetch ALL tools from MCP server
+            mcp_tools = await mcp_client.list_tools()
+            print(f"✅ Found {len(mcp_tools)} MCP tools")
+            
+            # Convert MCP tools to appropriate format
+            if provider == "bedrock":
+                llm_tools = [mcp_tool_to_claude_format(tool) for tool in mcp_tools]
+                print(f"✅ Converted {len(llm_tools)} tools to Claude format")
+                tool_names = [t["toolSpec"]["name"] for t in llm_tools]
+            else:  # OpenAI
+                llm_tools = [mcp_tool_to_openai_format(tool) for tool in mcp_tools]
+                print(f"✅ Converted {len(llm_tools)} tools to OpenAI format")
+                tool_names = [t["function"]["name"] for t in llm_tools]
+            
+            print(f"📋 Available tools: {', '.join(tool_names[:5])}{'...' if len(tool_names) > 5 else ''}")
+            
+            print()
+            print("=" * 70)
+            print("Ask about your cluster! I'll call MCP tools to get information.")
+            print()
+            print("Try: 'What's the cluster status?', 'Show pods in kube-system'")
+            print("Commands: 'clear' (reset), 'quit' (exit)")
+            print("=" * 70)
+            print()
+            
+            # System prompt
+            system_prompt = """You are a Kubernetes SRE assistant with access to MCP tools.
+
+CRITICAL: ALWAYS PREFER SUMMARY TOOLS FOR EFFICIENCY
+Summary tools return lightweight data (name, status, age, restarts) and can handle 100+ pods.
+Detailed tools return full specs and should ONLY be used when explicitly needed.
+
+TOOL SELECTION RULES:
+
+FOR LISTING PODS (use summary by default):
+- "list all pods", "show pods", "what's running": Use list_all_pods_summary()
+- "list pods in namespace X": Use list_pods_in_namespace_summary(namespace="X")
+- "detailed pods", "full pod info", "pod yaml": Use list_all_pods() or list_pods_in_namespace()
+
+FOR CLUSTER HEALTH:
+- Call: list_namespaces, list_nodes, list_all_pods_summary
+- Check for Failed/Pending pods and high restart counts
+
+Be helpful and proactive in identifying issues."""
+            
+            # Initialize conversation with system prompt
+            if provider == "bedrock":
+                conversation_history = []  # Bedrock handles system via systemMessages parameter
+            else:  # OpenAI
+                conversation_history = [{"role": "system", "content": system_prompt}]
+            
+            # Chat loop
+            while True:
+                try:
+                    query = input("💬 You: ").strip()
+                    
+                    if not query:
+                        continue
+                    
+                    if query.lower() in ['quit', 'exit', 'q']:
+                        print("👋 Goodbye!")
+                        break
+                    
+                    if query.lower() == 'clear':
+                        if provider == "bedrock":
+                            conversation_history = []
+                        else:
+                            conversation_history = [{"role": "system", "content": system_prompt}]
+                        print("🧹 Conversation cleared!")
+                        continue
+                    
+                    # Call appropriate chat function (using mcp_client)
+                    if provider == "bedrock":
+                        response, conversation_history = await chat_with_mcp_bedrock(
+                            query,
+                            conversation_history,
+                            llm_client,
+                            mcp_client,
+                            llm_tools,
+                            model_id,
+                            os.getenv("AWS_REGION", "us-east-1"),
+                            system_prompt
+                        )
+                    else:  # OpenAI
+                        response, conversation_history = await chat_with_mcp_openai(
+                            query,
+                            conversation_history,
+                            llm_client,
+                            mcp_client,
+                            llm_tools
+                        )
+                    
+                    if len(conversation_history) > 21:
+                        conversation_history = [conversation_history[0]] + conversation_history[-20:]
+                    
+                    # Print response with aggressive flushing
+                    if response:
+                        print(f"🤖 Assistant: {response}", flush=True)
+                        sys.stdout.flush()
+                        print(flush=True)  # Empty line
+                        sys.stdout.flush()
+                        print("─" * 70, flush=True)  # Visual separator
+                        sys.stdout.flush()
+                        print(flush=True)  # Another empty line
+                        sys.stdout.flush()
+                        # Delay to ensure everything is visible
+                        await asyncio.sleep(0.3)
+                        sys.stdout.flush()
+                    else:
+                        print("🤖 Assistant: (No response)", flush=True)
+                        sys.stdout.flush()
+                        print(flush=True)
+                        sys.stdout.flush()
+                        await asyncio.sleep(0.3)
+                    
+                except KeyboardInterrupt:
+                    print("\n👋 Goodbye!")
+                    break
+        
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+    finally:
+        # Clean up auto-started server
+        if server_process and server_process.poll() is None:
+            print("\n🛑 Stopping auto-started MCP server...")
+            server_process.terminate()
+            try:
+                server_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                server_process.kill()
+    
+    return 0
+
+
+async def main_stdio(provider: str, api_key: str, llm_client: Any, model_id: Optional[str]):
+    """Run interactive chat with MCP server using STDIO transport."""
+    # Connect to MCP server using FastMCP client (STDIO subprocess)
+    print("🚀 Connecting to MCP server (STDIO)...")
     
     try:
         async with Client("./mcp_server.py") as mcp_client:
@@ -545,6 +705,84 @@ Be helpful and proactive in identifying issues."""
         return 1
     
     return 0
+
+
+async def main():
+    """Main entry point with argument parsing."""
+    parser = argparse.ArgumentParser(
+        description="Interactive Kubernetes Chat via MCP Server + LLM"
+    )
+    parser.add_argument(
+        "--mcp-transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="MCP transport type (default: stdio)"
+    )
+    parser.add_argument(
+        "--mcp-url",
+        default="http://localhost:5000/mcp",
+        help="MCP server URL for HTTP transport (default: http://localhost:5000/mcp)"
+    )
+    parser.add_argument(
+        "--auto-start-server",
+        action="store_true",
+        help="Auto-start HTTP server if not running (HTTP transport only)"
+    )
+    
+    args = parser.parse_args()
+    
+    print("=" * 70)
+    print("🤖 Kubernetes Chat (via MCP Server + LLM)")
+    print("=" * 70)
+    print()
+    
+    # Detect LLM provider
+    provider, api_key = get_llm_provider()
+    
+    if not provider:
+        print("❌ No API key found!")
+        print("   Please create a .env file with either:")
+        print("   - AWS_BEDROCK_API_KEY=your-key (for Bedrock Claude)")
+        print("   - OPENAI_API_KEY=sk-your-key (for OpenAI)")
+        print()
+        print("   See env.example for template")
+        return 1
+    
+    print(f"✅ Using {provider.upper()} provider")
+    
+    # Initialize LLM client
+    llm_client = None
+    model_id = None
+    
+    if provider == "bedrock":
+        try:
+            region = os.getenv("AWS_REGION", "us-east-1")
+            model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+            
+            # Use the Bedrock API key directly with boto3
+            llm_client = boto3.client(
+                service_name='bedrock-runtime',
+                region_name=region,
+                aws_access_key_id=api_key,
+                aws_secret_access_key=api_key
+            )
+            print(f"✅ Bedrock client initialized (region: {region}, model: {model_id})")
+        except Exception as e:
+            print(f"❌ Bedrock error: {e}")
+            return 1
+    else:  # OpenAI
+        try:
+            llm_client = OpenAI(api_key=api_key)
+            print("✅ OpenAI client initialized")
+        except Exception as e:
+            print(f"❌ OpenAI error: {e}")
+            return 1
+    
+    # Choose transport
+    if args.mcp_transport == "http":
+        return await main_http(args.mcp_url, args.auto_start_server, provider, api_key, llm_client, model_id)
+    else:
+        return await main_stdio(provider, api_key, llm_client, model_id)
 
 
 if __name__ == "__main__":

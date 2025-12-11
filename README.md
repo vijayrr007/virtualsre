@@ -1,646 +1,378 @@
-# VirtualSRE - EKS Cluster MCP Server
+# VirtualSRE - Kubernetes MCP Server
 
-A Model Context Protocol (MCP) server that provides read-only access to AWS EKS (Elastic Kubernetes Service) clusters. This server enables querying Kubernetes resources (pods, deployments, services) and Istio service mesh resources (VirtualServices, DestinationRules) through a standardized MCP interface.
+An MCP (Model Context Protocol) server that provides **read-only access** to Kubernetes clusters through an LLM-powered chat interface. Query your clusters using natural language with OpenAI or AWS Bedrock Claude.
 
-## Features
+## ⚡ Quick Start
 
-- **Multi-Cluster Support**: Connect to and query multiple EKS clusters
-- **Dual Authentication**: Supports both kubeconfig and AWS IAM authentication
-- **Comprehensive Resource Access**: Query pods, deployments, services, and Istio resources
-- **Multiple Transports**: STDIO (local), SSE (Server-Sent Events), and HTTP streaming
-- **Read-Only Operations**: Safe cluster inspection without modification risks
-- **Full Metadata**: Returns complete Kubernetes object metadata for detailed analysis
-- **Clear System Prompts**: All tools have comprehensive docstrings optimized for LLM consumption
-
-## Architecture
-
-The project consists of three main components:
-
-1. **MCP Server** (`mcp_server.py`): FastMCP-based server exposing Kubernetes/Istio tools
-2. **MCP Client** (`mcp_client.py`): Multi-transport client for connecting to the server
-3. **Configuration** (`config.py`): Handles kubeconfig and AWS authentication
-
-## Installation
-
-### Prerequisites
-
-- Python 3.13 or higher
-- Access to at least one EKS cluster
-- Valid kubeconfig file or AWS credentials
-- (Optional) Istio installed in cluster for service mesh features
-
-### Install Dependencies
-
-Using `uv` (recommended):
+### 1. Install Dependencies
 
 ```bash
+# Using uv (recommended)
 uv sync
-```
 
-Using `pip`:
-
-```bash
+# Or using pip
 pip install -r requirements.txt
-# or
-pip install fastmcp kubernetes boto3 pyyaml httpx sse-starlette
 ```
 
-## Configuration
+### 2. Set Up API Key
 
-### Kubeconfig Setup
-
-The server uses your kubeconfig file to connect to clusters. By default, it looks for `~/.kube/config`.
+Create a `.env` file:
 
 ```bash
-# View available contexts
-kubectl config get-contexts
+# For OpenAI
+OPENAI_API_KEY=sk-your-key-here
 
-# Set default context
-kubectl config use-context my-cluster
+# OR for AWS Bedrock Claude
+AWS_BEDROCK_API_KEY=your-bedrock-key
+AWS_REGION=us-east-1
 ```
 
-### Local Kubernetes Clusters
-
-✅ **This MCP server works perfectly with local Kubernetes clusters!**
-
-Supported local setups:
-- **Docker Desktop** (with Kubernetes enabled)
-- **Minikube**
-- **Kind** (Kubernetes in Docker)
-- **K3s/K3d**
-- **Rancher Desktop**
-- **MicroK8s**
-- **Orbstack** (with Kubernetes)
-
-#### Quick Setup for Local Development
-
-**Docker Desktop:**
-```bash
-# Enable Kubernetes in Docker Desktop preferences
-# Then verify:
-kubectl config current-context
-# Should show: docker-desktop
-
-# Run the MCP server:
-python main.py --context docker-desktop
-```
-
-**Minikube:**
-```bash
-# Start minikube
-minikube start
-
-# Run the MCP server:
-python main.py --context minikube
-```
-
-**Kind:**
-```bash
-# Create a local cluster
-kind create cluster --name local-dev
-
-# Run the MCP server:
-python main.py --context kind-local-dev
-```
-
-#### Verify Your Local Cluster
-
-Run the verification script to check compatibility:
+### 3. Start Chatting!
 
 ```bash
-python verify_local_cluster.py
+python chat_with_mcp.py
 ```
 
-This will:
-- ✅ Check if kubeconfig is accessible
-- ✅ Test cluster connectivity
-- ✅ Verify available resources
-- ✅ Test the MCP client
-- ✅ Check if Istio is installed (optional)
+Example:
+```
+💬 You: What's running in my cluster?
+🔧 Calling: list_namespaces()
+🔧 Calling: list_all_pods_summary()
+🤖 Assistant: Your cluster has 5 namespaces and 23 pods running...
+```
 
-### AWS Authentication
+## ✨ Features
 
-For EKS clusters using IAM authentication:
+- 🤖 **Natural Language Interface** - Chat with your cluster using OpenAI or Bedrock Claude
+- 🔒 **Read-Only** - Safe cluster inspection without modification risks
+- 📊 **28 Kubernetes Tools** - Pods, deployments, services, Istio, Gateway API
+- 🚀 **Two Transports** - STDIO (subprocess) or HTTP (standalone server)
+- 🌐 **Multi-Cluster** - Query multiple clusters from kubeconfig
+- 💡 **Smart Tools** - Lightweight summary tools for efficiency
 
-1. Install and configure AWS CLI:
+## 📖 Usage
+
+### Interactive Chat (Recommended)
+
+#### Default (STDIO)
 ```bash
-aws configure
+python chat_with_mcp.py
 ```
 
-2. Update your kubeconfig for EKS:
+#### HTTP Server (for multiple clients)
 ```bash
-aws eks update-kubeconfig --region us-east-1 --name my-cluster
+# Terminal 1 - Start server
+python mcp_server.py --transport http --port 5000
+
+# Terminal 2 - Connect client
+python chat_with_mcp.py --mcp-transport http --mcp-url http://localhost:5000/mcp
 ```
 
-3. Set AWS environment variables (optional):
+#### Auto-start HTTP server
 ```bash
-export AWS_REGION=us-east-1
-export AWS_PROFILE=default
+python chat_with_mcp.py --mcp-transport http --auto-start-server
 ```
 
-## Usage
+### Chat Commands
+- `quit` or `exit` - Exit the chat
+- `clear` - Reset conversation history
+- Natural language queries about your cluster
 
-### Starting the MCP Server
-
-#### STDIO Transport (Default)
-
-Best for local development and direct integration:
-
-```bash
-python main.py
-```
-
-With custom kubeconfig:
-
-```bash
-python main.py --kubeconfig /path/to/kubeconfig
-```
-
-With specific default context:
-
-```bash
-python main.py --context prod-cluster
-```
-
-#### SSE Transport (Server-Sent Events)
-
-For HTTP-based streaming communication:
-
-```bash
-python main.py --transport sse --host 0.0.0.0 --port 8000
-```
-
-#### HTTP Transport
-
-For standard HTTP request/response:
-
-```bash
-python main.py --transport http --host 0.0.0.0 --port 8000
-```
-
-#### List Available Contexts
-
-```bash
-python main.py --list-contexts
-```
-
-### Using the MCP Client
-
-#### STDIO Transport Example
+### Programmatic Usage
 
 ```python
 import asyncio
-from mcp_client import create_client
+from fastmcp.client import Client
 
 async def main():
-    # Create client with STDIO transport
-    client = create_client(
-        transport="stdio",
-        server_script_path="./mcp_server.py"
-    )
-    
-    async with client:
-        # List all pods
-        pods = await client.list_all_pods()
-        print(f"Total pods: {len(pods)}")
+    async with Client("./mcp_server.py") as client:
+        # List tools
+        tools = await client.list_tools()
         
-        # List pods in specific namespace
-        pods = await client.list_pods_in_namespace("default")
-        
-        # List deployments
-        deployments = await client.list_deployments_in_namespace("production")
-        
-        # List services
-        services = await client.list_services_in_namespace("default")
-        
-        # List Istio VirtualServices
-        vs = await client.list_istio_virtual_services("default")
-        
-        # List Istio DestinationRules
-        dr = await client.list_istio_destination_rules("default")
+        # Call a tool
+        result = await client.call_tool(
+            "list_all_pods_summary",
+            arguments={}
+        )
+        print(result)
 
 asyncio.run(main())
 ```
 
-#### SSE Transport Example
+## 🛠️ Available Tools (28 Total)
 
-```python
-from mcp_client import create_client
+### Quick Reference
 
-async def main():
-    client = create_client(
-        transport="sse",
-        base_url="http://localhost:8000",
-        api_key="your-api-key"  # Optional
-    )
-    
-    async with client:
-        pods = await client.list_pods_in_namespace("default")
-        print(pods)
-```
+| Category | Summary Tools | Detailed Tools |
+|----------|--------------|----------------|
+| **Pods** | `list_all_pods_summary`<br>`list_pods_in_namespace_summary` | `list_all_pods`<br>`list_pods_in_namespace`<br>`get_pod_logs` |
+| **Workloads** | - | `list_deployments_in_namespace`<br>`list_statefulsets_in_namespace`<br>`list_daemonsets_in_namespace`<br>`list_jobs_in_namespace`<br>`list_cronjobs_in_namespace` |
+| **Network** | - | `list_services_in_namespace`<br>`list_ingresses_in_namespace` |
+| **Config** | - | `list_configmaps_in_namespace`<br>`list_secrets_in_namespace` |
+| **Cluster** | - | `list_namespaces`<br>`list_nodes`<br>`list_events_in_namespace`<br>`list_available_contexts` |
+| **Istio** | - | `list_istio_virtual_services`<br>`list_istio_destination_rules`<br>`list_istio_gateways`<br>`list_istio_service_entries`<br>`list_istio_peer_authentications`<br>`list_istio_authorization_policies` |
+| **Gateway API** | `list_gateways_summary`<br>`list_httproutes_summary` | `list_gateways`<br>`list_httproutes` |
 
-#### HTTP Transport Example
+**💡 Tip:** Use summary tools by default - they're faster and handle 100+ pods efficiently!
 
-```python
-from mcp_client import create_client
+## 🔧 Configuration
 
-async def main():
-    client = create_client(
-        transport="http",
-        base_url="http://localhost:8000"
-    )
-    
-    async with client:
-        services = await client.list_services_in_namespace("kube-system")
-        print(services)
-```
+### Local Kubernetes
 
-#### Multi-Cluster Operations
-
-```python
-from mcp_client import create_client
-
-async def main():
-    client = create_client(transport="stdio", server_script_path="./mcp_server.py")
-    
-    async with client:
-        # Get available contexts
-        contexts = await client.list_available_contexts()
-        print(f"Available clusters: {contexts}")
-        
-        # Query specific cluster
-        pods = await client.list_all_pods(cluster_context="prod-cluster")
-        
-        # Query another cluster
-        pods = await client.list_all_pods(cluster_context="staging-cluster")
-```
-
-### Running Examples
-
-A comprehensive example script is provided:
+Works with any local Kubernetes setup:
+- Docker Desktop, Minikube, Kind, K3s, Orbstack, etc.
 
 ```bash
-python example_usage.py
+# Verify your cluster
+kubectl config current-context
+kubectl get nodes
+
+# Start chatting
+python chat_with_mcp.py
 ```
 
-This demonstrates:
-- All transport types
-- Multi-cluster operations
-- Error handling
-- Istio service mesh queries
-- All available tools
+### AWS EKS
 
-## Available Tools
+```bash
+# Configure AWS CLI
+aws configure
 
-The MCP server provides **22 comprehensive tools** for querying Kubernetes and Istio resources.
+# Update kubeconfig
+aws eks update-kubeconfig --region us-east-1 --name my-cluster
 
-### Cluster & Namespace Tools
+# Start chatting
+python chat_with_mcp.py
+```
 
-#### 1. `list_available_contexts()`
-Lists all cluster contexts from kubeconfig.
-- **Returns**: List of context names
+### Multi-Cluster
 
-#### 2. `list_namespaces(cluster_context: Optional[str] = None)`
-Lists all namespaces in the cluster.
-- **Parameters**: `cluster_context` (optional)
-- **Returns**: List of namespace objects with full metadata
+Your kubeconfig contexts are automatically available:
 
-#### 3. `list_nodes(cluster_context: Optional[str] = None)`
-Lists all nodes in the cluster.
-- **Parameters**: `cluster_context` (optional)
-- **Returns**: List of node objects with capacity, conditions, and resource information
+```bash
+# List available clusters
+kubectl config get-contexts
 
-### Workload Tools
+# Query specific cluster
+💬 You: Show pods in prod-cluster
+```
 
-#### 4. `list_all_pods(cluster_context: Optional[str] = None)`
-Lists all pods across all namespaces in the cluster.
-- **Parameters**: `cluster_context` (optional)
-- **Returns**: List of pod objects with full metadata
+## 🖥️ Claude Desktop Integration
 
-#### 5. `list_pods_in_namespace(namespace: str, cluster_context: Optional[str] = None)`
-Lists all pods in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of pod objects with full metadata
+Add to your Claude config file:
 
-#### 6. `list_deployments_in_namespace(namespace: str, cluster_context: Optional[str] = None)`
-Lists all deployments in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of deployment objects with full metadata
+**macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 
-#### 7. `list_statefulsets_in_namespace(namespace: str, cluster_context: Optional[str] = None)`
-Lists all StatefulSets in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of StatefulSet objects with full metadata
-
-#### 8. `list_daemonsets_in_namespace(namespace: str, cluster_context: Optional[str] = None)`
-Lists all DaemonSets in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of DaemonSet objects with full metadata
-
-#### 9. `list_jobs_in_namespace(namespace: str, cluster_context: Optional[str] = None)`
-Lists all Jobs in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of Job objects with full metadata
-
-#### 10. `list_cronjobs_in_namespace(namespace: str, cluster_context: Optional[str] = None)`
-Lists all CronJobs in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of CronJob objects with schedule and status
-
-### Network & Service Tools
-
-#### 11. `list_services_in_namespace(namespace: str, cluster_context: Optional[str] = None)`
-Lists all services in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of service objects with full metadata
-
-#### 12. `list_ingresses_in_namespace(namespace: str, cluster_context: Optional[str] = None)`
-Lists all Ingresses in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of Ingress objects with routing rules and TLS config
-
-### Configuration Tools
-
-#### 13. `list_configmaps_in_namespace(namespace: str, cluster_context: Optional[str] = None)`
-Lists all ConfigMaps in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of ConfigMap objects with configuration data
-
-#### 14. `list_secrets_in_namespace(namespace: str, cluster_context: Optional[str] = None)`
-Lists all Secrets (metadata only) in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of Secret objects (data values hidden for security)
-- **Security**: Only returns metadata, not actual secret values
-
-### Monitoring & Debugging Tools
-
-#### 15. `list_events_in_namespace(namespace: str, cluster_context: Optional[str] = None)`
-Lists all Events in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of Event objects with reasons and messages
-
-#### 16. `get_pod_logs(pod_name: str, namespace: str, container: Optional[str] = None, tail_lines: int = 100, cluster_context: Optional[str] = None)`
-Gets logs from a specific pod.
-- **Parameters**: `pod_name` (required), `namespace` (required), `container` (optional), `tail_lines` (default: 100), `cluster_context` (optional)
-- **Returns**: Dictionary with pod logs
-
-### Istio Service Mesh Tools
-
-#### 17. `list_istio_virtual_services(namespace: str, cluster_context: Optional[str] = None)`
-Lists all Istio VirtualServices in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of VirtualService objects with routing rules
-- **Note**: Requires Istio. Supports v1alpha3 and v1beta1.
-
-#### 18. `list_istio_destination_rules(namespace: str, cluster_context: Optional[str] = None)`
-Lists all Istio DestinationRules in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of DestinationRule objects with traffic policies
-- **Note**: Requires Istio. Supports v1alpha3 and v1beta1.
-
-#### 19. `list_istio_gateways(namespace: str, cluster_context: Optional[str] = None)`
-Lists all Istio Gateways in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of Gateway objects with ingress/egress configurations
-- **Note**: Requires Istio. Supports v1alpha3 and v1beta1.
-
-#### 20. `list_istio_service_entries(namespace: str, cluster_context: Optional[str] = None)`
-Lists all Istio ServiceEntries in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of ServiceEntry objects for external service integration
-- **Note**: Requires Istio. Supports v1alpha3 and v1beta1.
-
-#### 21. `list_istio_peer_authentications(namespace: str, cluster_context: Optional[str] = None)`
-Lists all Istio PeerAuthentication policies in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of PeerAuthentication objects with mTLS settings
-- **Note**: Requires Istio. Supports v1beta1 and v1.
-
-#### 22. `list_istio_authorization_policies(namespace: str, cluster_context: Optional[str] = None)`
-Lists all Istio AuthorizationPolicy resources in a specific namespace.
-- **Parameters**: `namespace` (required), `cluster_context` (optional)
-- **Returns**: List of AuthorizationPolicy objects with access control rules
-- **Note**: Requires Istio. Supports v1beta1 and v1.
-
-## Return Data Structure
-
-All tools return complete Kubernetes object metadata including:
-
-### Pod Structure
 ```json
 {
-  "metadata": {
-    "name": "pod-name",
-    "namespace": "default",
-    "labels": {...},
-    "annotations": {...},
-    "creation_timestamp": "2024-01-01T00:00:00Z"
-  },
-  "spec": {
-    "containers": [...],
-    "volumes": [...],
-    "node_name": "node-1"
-  },
-  "status": {
-    "phase": "Running",
-    "pod_ip": "10.0.1.5",
-    "container_statuses": [...]
+  "mcpServers": {
+    "virtualsre": {
+      "command": "python",
+      "args": ["/absolute/path/to/virtualsre/mcp_server.py"]
+    }
   }
 }
 ```
 
-### Deployment Structure
+**Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+
 ```json
 {
-  "metadata": {...},
-  "spec": {
-    "replicas": 3,
-    "selector": {...},
-    "template": {...},
-    "strategy": {...}
-  },
-  "status": {
-    "replicas": 3,
-    "ready_replicas": 3,
-    "conditions": [...]
+  "mcpServers": {
+    "virtualsre": {
+      "command": "python",
+      "args": ["C:\\path\\to\\virtualsre\\mcp_server.py"]
+    }
   }
 }
 ```
 
-### Service Structure
-```json
-{
-  "metadata": {...},
-  "spec": {
-    "type": "LoadBalancer",
-    "selector": {...},
-    "ports": [...]
-  },
-  "status": {
-    "load_balancer": {...}
-  }
-}
+Restart Claude Desktop to load the server.
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                     chat_with_mcp.py                    │
+│              (OpenAI/Bedrock + Conversation)            │
+└──────────────────────┬──────────────────────────────────┘
+                       │
+                       ├──STDIO──► mcp_server.py (subprocess)
+                       │
+                       └───HTTP──► mcp_server.py (network)
+                                         │
+                                         ▼
+                               ┌─────────────────┐
+                               │  Kubernetes API  │
+                               │   28 Tools      │
+                               └─────────────────┘
 ```
 
-## Error Handling
+## 📋 Project Structure
 
-The server returns error objects in the following format:
-
-```json
-{
-  "error": "Error description",
-  "details": "Additional details",
-  "namespace": "affected-namespace"
-}
+```
+virtualsre/
+├── mcp_server.py        # MCP server with 28 Kubernetes tools
+├── chat_with_mcp.py     # Interactive LLM chat interface
+├── config.py            # Kubeconfig and AWS authentication
+├── pyproject.toml       # Dependencies
+├── .env.example         # Environment variable template
+└── README.md            # This file
 ```
 
-Common error scenarios:
-- **Invalid cluster context**: Context doesn't exist in kubeconfig
-- **Authentication failure**: Invalid credentials or expired tokens
-- **Namespace not found**: Returns empty list or error
-- **Istio not installed**: Returns error message for Istio resources
-- **Permission denied**: Insufficient RBAC permissions
+## 🔒 Security
 
-## Security Considerations
+- ✅ **Read-Only** - No write operations
+- ✅ **RBAC Compliant** - Respects Kubernetes permissions
+- ✅ **Credential Safety** - Uses existing kubeconfig/AWS credentials
+- ✅ **Secret Protection** - Only returns secret metadata, not values
 
-- **Read-Only**: All operations are read-only by default
-- **RBAC**: Respects Kubernetes RBAC policies
-- **Credentials**: Uses existing kubeconfig or AWS credentials
-- **No Modifications**: Server cannot create, update, or delete resources
-- **Safe Inspection**: Suitable for production cluster monitoring
-
-## Troubleshooting
+## 🐛 Troubleshooting
 
 ### Connection Issues
 
 ```bash
-# Verify kubeconfig
-kubectl config view
-
-# Test cluster connectivity
+# Test cluster access
 kubectl get nodes
 
-# Check AWS credentials
+# Test AWS credentials (for EKS)
 aws sts get-caller-identity
 
-# Verify EKS access
-aws eks describe-cluster --name my-cluster --region us-east-1
+# Verify kubeconfig
+kubectl config view
+```
+
+### Port Already in Use
+
+```bash
+# Use a different port
+python chat_with_mcp.py --mcp-transport http --mcp-url http://localhost:5555/mcp --auto-start-server
 ```
 
 ### Permission Errors
 
-Ensure your service account or IAM role has these permissions:
-- `pods/list` (in all namespaces or specific namespaces)
-- `deployments/list`
-- `services/list`
-- `virtualservices/list` (for Istio)
-- `destinationrules/list` (for Istio)
+Ensure your kubeconfig user has these permissions:
+- `pods/list`, `deployments/list`, `services/list`
+- `namespaces/list`, `nodes/list`
 
-### Istio Not Found
-
-If you get "CRD not found" errors for Istio resources:
+## 🧪 Testing
 
 ```bash
-# Check if Istio is installed
-kubectl get crd | grep istio
+# Test STDIO transport
+python chat_with_mcp.py
 
-# Install Istio (if needed)
-istioctl install --set profile=demo
+# Test HTTP server
+python mcp_server.py --transport http --port 5555
+
+# Test with curl
+curl -X POST http://localhost:5555/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","method":"tools/list","params":{},"id":1}'
 ```
 
-## Development
+## 📚 Tool Details
 
-### Project Structure
+### Summary vs Detailed Tools
 
-```
-virtualsre/
-├── main.py              # CLI entry point
-├── mcp_server.py        # FastMCP server implementation
-├── mcp_client.py        # Multi-transport MCP client
-├── config.py            # Configuration management
-├── example_usage.py     # Usage examples
-├── pyproject.toml       # Dependencies
-└── README.md            # Documentation
-```
+**Summary Tools** (Recommended):
+- Return only essential fields (name, status, age, restarts)
+- Fast and efficient for large clusters (100+ pods)
+- Use for general queries
 
-### Adding New Tools
+**Detailed Tools** (When Needed):
+- Return complete specifications and YAML
+- Use when debugging or need full configuration
+- Slower for large datasets
 
-To add a new tool to the server:
-
-1. Define the tool function in `mcp_server.py`:
+### Example Tool Calls
 
 ```python
-@mcp.tool()
-def my_new_tool(namespace: str, cluster_context: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Comprehensive docstring with:
-    - PURPOSE: What the tool does
-    - WHEN TO USE: Use cases
-    - PARAMETERS: Parameter descriptions
-    - RETURNS: Return value structure
-    - ERROR CONDITIONS: Possible errors
-    - EXAMPLE USAGE: Usage examples
-    """
-    # Implementation
-    pass
+# Summary - Fast
+await client.call_tool("list_all_pods_summary", {})
+
+# Detailed - Complete info
+await client.call_tool("list_all_pods", {})
+
+# With namespace
+await client.call_tool("list_pods_in_namespace_summary", {
+    "namespace": "kube-system"
+})
+
+# With cluster context
+await client.call_tool("list_all_pods_summary", {
+    "cluster_context": "prod-cluster"
+})
+
+# Get pod logs
+await client.call_tool("get_pod_logs", {
+    "pod_name": "my-pod",
+    "namespace": "default",
+    "tail_lines": 100
+})
 ```
 
-2. Add corresponding method to `EKSMCPClient` in `mcp_client.py`:
+## 🚀 Advanced Usage
 
-```python
-async def my_new_tool(self, namespace: str, cluster_context: Optional[str] = None):
-    """Call my_new_tool."""
-    args = {"namespace": namespace}
-    if cluster_context:
-        args["cluster_context"] = cluster_context
-    return await self.transport.call_tool("my_new_tool", args)
-```
-
-### Testing
+### HTTP Server Options
 
 ```bash
-# Run example script
-python example_usage.py
+# Default port 5000
+python mcp_server.py --transport http
 
-# Test specific namespace
-python -c "import asyncio; from mcp_client import create_client; asyncio.run(create_client('stdio', server_script_path='./mcp_server.py').list_pods_in_namespace('default'))"
+# Custom port and host
+python mcp_server.py --transport http --host 127.0.0.1 --port 8080
+
+# For production (bind to all interfaces)
+python mcp_server.py --transport http --host 0.0.0.0 --port 5000
 ```
 
-## License
+### Environment Variables
 
-MIT License - See LICENSE file for details
+```bash
+# In .env file
+OPENAI_API_KEY=sk-...                                    # OpenAI key
+AWS_BEDROCK_API_KEY=...                                  # Bedrock key
+BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0
+AWS_REGION=us-east-1
+```
 
-## Contributing
+## 🛣️ Roadmap
 
-Contributions are welcome! Please:
+**Completed:**
+- [x] STDIO and HTTP transports
+- [x] Interactive LLM chat (OpenAI + Bedrock)
+- [x] 28 comprehensive Kubernetes tools
+- [x] Summary and detailed tool variants
+- [x] Pod logs retrieval
+- [x] Istio service mesh support
+- [x] Gateway API support
 
+**Planned:**
+- [ ] Real-time log streaming
+- [ ] Metrics and monitoring integration
+- [ ] Write operations (with safeguards)
+- [ ] Multi-cloud support (GKE, AKS)
+- [ ] Web UI
+
+## 🤝 Contributing
+
+Contributions welcome! Please:
 1. Fork the repository
 2. Create a feature branch
-3. Add tests for new functionality
+3. Add tests
 4. Submit a pull request
 
-## Support
+## 📄 License
 
-For issues and questions:
-- Open an issue on GitHub
-- Check existing documentation
-- Review example usage
+MIT License
 
-## Roadmap
-
-Future enhancements:
-- [ ] Support for more Kubernetes resources (ConfigMaps, Secrets, etc.)
-- [ ] Write operations (with appropriate safeguards)
-- [ ] Real-time streaming of pod logs
-- [ ] Metrics and monitoring integration
-- [ ] Support for Helm releases
-- [ ] Multi-cloud support (GKE, AKS)
-- [ ] Web UI for visual cluster exploration
-
-## Acknowledgments
+## 🙏 Acknowledgments
 
 Built with:
 - [FastMCP](https://github.com/jlowin/fastmcp) - MCP framework
-- [Kubernetes Python Client](https://github.com/kubernetes-client/python) - Kubernetes API access
-- [Boto3](https://github.com/boto/boto3) - AWS SDK for Python
+- [Kubernetes Python Client](https://github.com/kubernetes-client/python)
+- [Boto3](https://github.com/boto/boto3) - AWS SDK
 
+---
+
+**Need help?** Open an issue or check the [examples](./chat_with_mcp.py) for more usage patterns.
